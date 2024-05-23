@@ -1,0 +1,189 @@
+# questo invece è quello vecchio che avevo gia mandato ieri
+import gymnasium as gym
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+class RBFnet(nn.Module):
+    def __init__(self, num_centers, final_point, sigma=1.0):
+        #defining the net
+        super(RBFnet, self).__init__()
+        self.num_centers = num_centers
+        self.sigma = sigma
+        self.centers = nn.Parameter(torch.linspace(0, final_point, num_centers))
+        self.weights = nn.Parameter(torch.randn(num_centers))
+        self.signs = torch.tensor([(-1)**i for i in range(num_centers)], dtype=torch.float32) #one has to be positive, the other one negative
+
+    def forward(self, x): 
+        x = x.unsqueeze(1) if x.dim() == 1 else x
+        G = torch.exp(-((x - self.centers)**2) / (2 * self.sigma**2)) * self.signs
+        return torch.matmul(G, self.weights)
+
+
+class HummingBird(gym.Env):
+    def __init__(self, g=9.81, m=0.005, L=2, S=7.7e-2, dt=0.05, R=5.6e-2, zero_velocity_penalty=1e5):
+        self.final_time_estimate = 0.9 + 0.2
+        self.mean_freq = 50
+        self.g = g
+        self.m = m
+        self.L = L
+        self.S = S
+        self.R = R
+        self.dt = dt
+        self.c_A = 0.5 #tbd from physics
+        self.bal = 0
+        self.t = [0]
+        self.change = []
+        self.balistic_treshold = 0.00001 #to change drag in balistic part
+        self.states_ = [np.array([0.0, 0.0])] 
+
+    def reset(self):
+        self.states_ = [np.array([0.0, 0.0])]
+        self.bal = 0
+        self.t = [0]
+        return np.array([0.0, 0.0])
+
+    def drag(self, x_dot):
+        if x_dot == 0:
+            x_dot = 1e-5
+        c_d = 7 / np.sqrt(abs(x_dot) * (self.S / self.R) / 1.460e-5) #tbd change drag coefficient for balistic flight
+        return 0.5 * c_d * self.S * x_dot**2
+
+    def hummingbird_dynamics(self, state, action):
+        if abs(action) < self.balistic_treshold: #to spot the beginning of balistic flight
+            if self.bal == 0:
+                self.change.append([self.t[-1], state])
+            self.bal = 1
+        else:
+            self.bal = 0
+
+        F_g = self.m * self.g #gravity
+        F_p = self.c_A * (action)**2 #propulsion
+        F_d = self.drag(state[1]) #drag
+        x_dot = state[1] + (F_p - F_g - F_d) * self.dt / self.m #simplified dynamics, x_double dot = (x_dot(next)-x_dot(0))/dt
+        x = state[0] + x_dot * self.dt
+        return x, x_dot
+
+    def step(self, state, action):
+        done = False
+        x, x_dot = self.hummingbird_dynamics(state, action)
+  
+        cost = action**2 #not used now
+        state_ = np.array([x, x_dot]) #to track states per episode
+        self.states_.append(state_)
+        
+        if x >= self.L: #episode is done if x>L or if the velocity is negative (hummingbirds either hover or go up in this scenario i think(?))
+            done = True 
+        if x_dot < 0:
+            done = True
+            cost = np.exp(np.exp(2-x*2)) #not used now
+            
+        
+        self.t.append(self.t[-1] + self.dt)
+        return state_, -cost, done, {}
+
+
+
+
+
+
+# Test environment
+env = HummingBird()
+state = env.reset()
+
+# initialize the agent 
+num_centers = int(np.ceil(1 * env.final_time_estimate * env.mean_freq))
+agent = RBFnet(num_centers=num_centers, final_point=env.L, sigma=0.01) #num centers = num swings, freq* final time estimate from paper
+optimizer = optim.Adam([agent.weights], lr=0.001)
+
+# Training loop
+num_epochs = 10000
+x_values = torch.linspace(0, env.L, 1000, requires_grad=True)
+final_distances = []
+losses = []
+primo = agent(x_values) #same as agent.forward(x_values), first gaussian
+total_cost = 0 #not used
+best_model = [1e5, 0,0,0] 
+distances = [] #for integral loss of distance
+int_losses = []
+exp_losses = []
+mean_weight = []
+
+for epoch in range(num_epochs):
+    optimizer.zero_grad()
+    A_values = agent(x_values)
+    state = env.reset()
+    done = False
+    while not done:
+        action = agent(torch.tensor([state[0]], dtype=torch.float32))
+        state, reward, done, _ = env.step(state, action.item())
+        #distances.append(state[0]) #to try to plot 
+        total_cost += -reward  # Accumulate the cost, not used
+
+    final_distance = state[0]
+    final_distances.append(final_distance)
+
+    #total_cost_tensor = torch.tensor(total_cost, dtype=torch.float32, requires_grad=True) #Add the accumulated cost to the loss function, not used
+
+    loss_integral = torch.trapz(A_values**2, x=x_values) # int loss
+    loss_exp = torch.exp((2-torch.tensor(state[0],requires_grad=True))**2) # exp loss. only for last state, tbd again soon (my idea was to use it like a heavy mayer therm)
+    int_losses.append(loss_integral)
+    exp_losses.append(loss_exp)
+    loss = loss_integral + loss_exp
+   
+
+    if loss < best_model[0]: #
+        best_model[0] = loss
+        best_model[1]= A_values
+        best_model[2] = epoch
+        best_model[3] = [state[0],state[1]]
+    #loss.data=total
+
+    # backpropagation and optimization
+    loss.backward()
+    optimizer.step()
+
+    losses.append(loss.item())
+    mean_weight.append(np.mean(agent.weights.detach().numpy()))
+    if (epoch + 1) % 1000 == 0:
+        print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item()}, Final Distance: {final_distance}')
+        #print(torch.trapz(A_values**2, x=x_values)-torch.trapz(primo**2, x=x_values))
+        print(agent.weights)
+
+
+# average loss of the last 100 epochs
+last_100_losses = losses[-100:]
+average_loss = sum(last_100_losses) / len(last_100_losses)
+
+print(f'Average Loss of Last 100 Epochs: {average_loss}')
+#print('loss:',losses[:100])
+#print('final distance first 100:',final_distances[:100])
+#print('final distance last 100',final_distances[-100:])
+print('miglior loss:',best_model[0], 'for epoch',best_model[2], 'x:',best_model[3][0],'x_dot',best_model[3][1])
+
+# plots
+plt.figure(1)
+plt.plot(final_distances) #wrt episode. Should stabilize near 2 but it doesnt :(
+plt.title('final distance over episode')
+
+plt.figure(2)
+plt.plot(x_values.detach().numpy(),primo.detach().numpy(), label= 'first')
+plt.plot(x_values.detach().numpy(),A_values.detach().numpy(), label = 'last')
+plt.plot(x_values.detach().numpy(),best_model[1].detach().numpy(), label = 'best, episode:'+ str(best_model[2]) )
+plt.legend(loc = 'best')
+plt.xlabel('X')
+
+plt.figure(3)
+plt.plot([i.detach().numpy()/10 for i in exp_losses],label ='exp loss/10')
+plt.plot([i.detach().numpy() for i in int_losses],label = 'integral loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend(loc = 'best')
+plt.title('loss over episode')
+
+plt.figure(4)
+plt.plot(mean_weight)
+plt.title('mean weight over episode')
+plt.show()
