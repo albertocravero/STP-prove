@@ -1,0 +1,189 @@
+#ho provato a farlo con la sintassi agent+ funzione learn, ma continua a non funzionare :( ho notato che predilige fare meno step e arrivare subito a done in negativo perche cosi ha convergenza. Questo codice converge 
+#o andando in negativo (ha le forze che spingon di sotto), o a 4 (loss vicino a 0, ma devo capire perche) o prende e va per la tangente perche ho messo la loss negativa e allora piu si allontana da 2 meglio e. 
+#comunque alla fine oggi non ho seguito i tuoi consigli, e infatti ho buttato una giornata sono un idiota. ora vado avanti con la review, domani o cerco ancora di capire qualcosa o levo pytorch e faccio con scipy.
+import gymnasium as gym
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+class RBFnet(nn.Module):
+    def __init__(self, num_centers, final_point, sigma=1.0):
+        super(RBFnet, self).__init__()
+        self.num_centers = num_centers
+        self.sigma = sigma
+        self.centers = nn.Parameter(torch.linspace(0, final_point, num_centers))
+        self.weights = nn.Parameter(torch.randn(num_centers))
+        self.signs = torch.tensor([(-1)**i for i in range(num_centers)], dtype=torch.float32)
+
+    def forward(self, x):
+        x = x.unsqueeze(1) if x.dim() == 1 else x
+        G = torch.exp(-((x - self.centers)**2) / (2 * self.sigma**2)) * self.signs
+        return torch.matmul(G, self.weights)
+
+class RBF_agent():
+    def __init__(self, num_centers, final_point, sigma, lr=0.01):
+        self.A_val = RBFnet(num_centers=num_centers, final_point=final_point, sigma=sigma)
+        self.optimizer = optim.Adam(self.A_val.parameters(), lr=lr)
+        self.loss_fn = nn.L1Loss()
+        self.final_point = final_point
+
+    def choose_action(self, obs):
+        state = torch.tensor([obs[0]], dtype=torch.float32)
+        return self.A_val.forward(state).item()
+
+    def learn(self, state, target):
+        self.optimizer.zero_grad()
+        output = self.A_val(state)
+        #time not used
+        loss = -self.loss_fn(output, target) 
+        loss.backward()
+        self.optimizer.step()
+        return loss.item()
+
+class HummingBird(gym.Env):
+    def __init__(self, g=9.81, m=0.005, L=2, S=7.7e-2, dt=0.05, R=5.6e-2):
+        self.final_time_estimate = 0.9 + 0.2
+        self.mean_freq = 50
+        self.g = g
+        self.m = m
+        self.L = L
+        self.S = S
+        self.R = R
+        self.dt = dt
+        self.c_A = 0.5
+        self.bal = 0
+        self.t = [0]
+        self.change = []
+        self.balistic_treshold = 0.00001
+        self.states_ = [np.array([0.0, 0.0])]
+
+    def reset(self):
+        self.states_ = [np.array([0.0, 0.0])]
+        self.bal = 0
+        self.t = [0]
+        return np.array([0.0, 0.0])
+
+    def drag(self, x_dot):
+        if x_dot == 0:
+            x_dot = 1e-5
+        c_d = 7 / np.sqrt(abs(x_dot) * (self.S / self.R) / 1.460e-5)
+        return 0.5 * c_d * self.S * x_dot**2
+
+    def hummingbird_dynamics(self, state, action):
+        if abs(action) < self.balistic_treshold:
+            if self.bal == 0:
+                self.change.append([self.t[-1], state])
+            self.bal = 1
+        else:
+            self.bal = 0
+
+        F_g = self.m * self.g
+        F_p = self.c_A * (action)**2
+        F_d = self.drag(state[1])
+        x_dot = state[1] + (F_p - F_g - F_d) * self.dt / self.m
+        x = state[0] + x_dot * self.dt
+        return x, x_dot
+
+    def step(self, action):
+        state = self.states_[-1]
+        x, x_dot = self.hummingbird_dynamics(state, action)
+        #done = x >= self.L or x_dot < 0
+        done = x>= self.L or x<-2 or self.t[-1]>11
+        
+        cost = action**2
+        #cost = (x<-1 or self.t[-1]>12)*torch.tensor(100*np.random.uniform(), dtype=torch.float32) #tanto non lo sto usando
+        state_ = np.array([x, x_dot])
+        self.states_.append(state_)
+        self.t.append(self.t[-1] + self.dt)
+        return state_, cost, done, {}
+
+#ho provato co
+
+# Test environment
+env = HummingBird()
+state = env.reset()
+
+# Initialize the agent
+num_centers = int(np.ceil(1 * env.final_time_estimate * env.mean_freq))
+agent = RBF_agent(num_centers=num_centers, final_point=env.L, sigma=0.01, lr=0.01)
+
+# Training loop
+num_epochs = 10000
+x_values = torch.linspace(0, env.L, 1000, requires_grad=True)
+final_distances = []
+losses = []
+primo = agent.A_val(x_values)
+total_cost = 0
+best_model = [1e5, 0, 0, 0]
+distances = []
+int_losses = []
+exp_losses = []
+mean_weight = []
+
+for epoch in range(num_epochs):
+    state = env.reset()
+    done = False
+    episode_loss =0#torch.tensor([env.L], dtype=torch.float32)
+    n_ep = 0
+    while not done:
+        action = agent.choose_action(state)
+        next_state, reward, done, _ = env.step(action)
+        loss = agent.learn(torch.tensor([state[0]], dtype=torch.float32), torch.tensor([next_state[0]], dtype=torch.float32))
+        episode_loss += loss
+        state = next_state
+        n_ep+=1
+    #print(n_ep, env.states_)
+
+    final_distance = state[0]
+    final_distances.append(final_distance)
+    A_values = agent.A_val(x_values)
+    
+    loss_integral = torch.trapz(A_values**2, x=x_values)
+    int_losses.append(loss_integral.item())
+    exp_losses.append(episode_loss)
+    loss = episode_loss 
+
+    if loss < best_model[0]:
+        best_model[0] = loss
+        best_model[1] = A_values
+        best_model[2] = epoch
+        best_model[3] = [state[0], state[1]]
+
+    losses.append(episode_loss)
+    mean_weight.append(agent.A_val.weights.mean().item())
+    if (epoch + 1) % 1000 == 0:
+        print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {loss}, Final Distance: {final_distance}')
+        print(agent.A_val.weights)
+
+# Average loss of the last 100 epochs
+last_100_losses = losses[-100:]
+average_loss = sum(last_100_losses) / len(last_100_losses)
+print(f'Average Loss of Last 100 Epochs: {average_loss}')
+print('Best loss:', best_model[0], 'at epoch', best_model[2], 'with final position:', best_model[3][0], 'and final velocity:', best_model[3][1])
+
+# Plots
+plt.figure(1)
+plt.plot(final_distances)
+plt.title('Final distance over episodes')
+plt.figure(2)
+plt.plot(x_values.detach().numpy(), primo.detach().numpy(), label='First')
+plt.plot(x_values.detach().numpy(), A_values.detach().numpy(), label='Last')
+plt.plot(x_values.detach().numpy(), best_model[1].detach().numpy(), label=f'Best, epoch: {best_model[2]}')
+plt.legend(loc='best')
+plt.xlabel('X')
+
+plt.figure(3)
+plt.plot([i / 10 for i in exp_losses], label='Exp loss / 10')
+plt.plot(int_losses, label='Integral loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend(loc='best')
+plt.title('Loss over episodes')
+
+plt.figure(4)
+plt.plot(mean_weight)
+plt.title('Mean weight over episodes')
+
+plt.show()
