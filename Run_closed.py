@@ -33,7 +33,7 @@ lr_sigma = 0.001
 c = [1, 1/5, 0]
 limit = np.pi * 8 / 18
 limit = np.pi *1.1/2
-num_epochs = 100
+num_epochs = 10
 UPDATE_EVERY = num_epochs/10
 c_A = 0.5*1e-2/np.sqrt(10)
 
@@ -45,7 +45,7 @@ c_A = 1
 action_limit = 2000
 #action_limit = 3 /c_A /(2*0.3/np.sqrt(10))
 c_A = 1e-3/np.sqrt(10)
-c_A = 1e-2/3
+c_A = 1e-4/7
 env = HB_simplified_closed(c_A=c_A, final_time=4)
 
 state = env.reset()
@@ -112,6 +112,7 @@ for epoch in range(num_epochs):
         #action = agent.closed_action(state,1)
         action = agent.choose_action(state)
         next_state, reward, done = env.step(action)
+        #print('not done',state)
         phi_over_t.append(agent.A_val.gaussian([state[0],state[1]]))
         #agent.pos_loss+= [agent.A_val.loss_fn(state[0],TT(2)),1]
         #agent.pos_loss+=agent.A_val.loss_fn(state[0],TT(2))
@@ -136,7 +137,7 @@ for epoch in range(num_epochs):
     episode_loss = reward
     final_distance = state[0]
     final_distances.append(final_distance.item())
-    A_values = agent.A_val(x_values)
+    A_values = agent.A_val(agent.A_val.points_for_net)
     positions = [i[0].item() for i in env.states_]
     lengths.append(len(positions))
     loss_integral = agent.vel_loss
@@ -197,8 +198,7 @@ plt.savefig(directory + cartella + 'distance.png', dpi=300)
 plt.figure(2)
 #plt.plot(x_values.detach().numpy(), 180/np.pi * A_values.detach().numpy(), label='Last')
 #plt.plot(x_values.detach().numpy(), 180/np.pi * best_model['net'].detach().numpy(), label=f'Best, epoch: {best_epoch}')
-plt.plot(x_values.detach().numpy(), best_model['net'].detach().numpy(), label=f'Best, epoch: {best_epoch}')
-
+agent.A_val.plot()
 
 for i in best_model['centers']:
     plt.axvline(i, color='r', linestyle='--')
@@ -291,6 +291,9 @@ if not torch.isnan(reward):
     for epoch in range(num_epochs):
         filename = f'{directory + cartella}A_val_{epoch}.png'
         os.remove(filename)
+
+
+
 
 
 
