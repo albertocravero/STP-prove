@@ -29,50 +29,41 @@ class RBF_agent_open():
         self.int_loss = 0
         self.pos_loss = self.A_val.loss_fn(TT(0),TT(2.))
         self.vel_loss = self.A_val.loss_fn(TT(0),TT(0))
+        self.action_loss = []
 
 
 
 
-    def choose_action(self, obs): #not very useful in this case
-        #return self.A_val.forward(obs[2])
-        return self.A_val.get_values(obs[2])
+    def choose_action(self, obs): 
+
+        #action = self.A_val.get_values(obs[2]) #simple action evaluation 
+        action = self.A_val.get_values_integral(obs[2]) #integral action evaluation
+        self.action_loss.append(action)
+        return action
 
     # Learn function (called during every timestep)
     def learn(self, state):
-
         self.A_val.optimizer.zero_grad()
 
-        action_loss = torch.matmul((self.A_val.ordinate_prime>self.A_val.action_limit)*1.,self.A_val.ordinate_prime - self.A_val.action_limit)
-        const_loss =  torch.matmul((abs(self.A_val.net)>self.weight_limit)*1.,abs(self.A_val.net)-self.weight_limit)
+        self.action_loss = torch.stack(self.action_loss)-self.A_val.action_limit 
+        weight_cost = torch.sum(self.A_val.loss_constraint_fun(abs(self.A_val.net)-self.weight_limit)) #Relu
+        action_cost = torch.sum(self.A_val.loss_constraint_fun(self.action_loss)) #Relu
+        const_loss = weight_cost + 0.1*action_cost
 
-        #const_loss = torch.matmul((self.A_val.ordinate[:]>self.weight_limit)*1.,self.A_val.ordinate-self.weight_limit)
-        #const_loss = torch.exp(1+const_loss) + action_loss
-        const_loss = 10*const_loss + 0.1*action_loss
+        print('pos:',self.pos_loss.item(),'vel:',self.vel_loss.item(),'weight',weight_cost.item(),'action',action_cost.item())
+        #loss=0.01*(self.pos_loss+0.01*self.vel_loss) + const_loss
+        loss=0.01*(self.pos_loss+0.001**self.vel_loss + 0.1* const_loss) #pos and vel: MSE
 
-        final_time = torch.tensor(self.final_time, dtype=torch.float32)
-
-
-
-        #self.A_val.optimizer.zero_grad()
-
-        loss=0.01*(self.pos_loss+0.01*self.vel_loss) + const_loss
 
         loss.backward(retain_graph=True)
 
         self.A_val.optimizer.step()
 
-        # if abs(self.A_val.weights.detach().numpy()[:]).any()>self.weight_limit:
-        #     print('oltre il limite')
-
-        t_values = torch.linspace(0,final_time,int(1000*final_time.item())) #to evaluate integral loss
+        final_time = torch.tensor(self.final_time, dtype=torch.float32)
+        t_values = torch.linspace(0,final_time,int(1000*final_time.item())) #to update net
         self.A_val.net = self.A_val.forward(t_values)
 
-        # with torch.no_grad():
-        #     self.A_val.weights.clamp_(-self.weight_limit, self.weight_limit)
-        #     #self.A_val.sigma.clamp_(0,1)
-
-        #print(loss, pos,vel,u1,self.A_val.sigma)
-        #print(loss,pos)
+        self.action_loss = []
         return loss
 
 
@@ -219,8 +210,9 @@ class RBF_agent_closed_simple():
         #const_loss = torch.matmul((self.A_val.ordinate[:]>self.weight_limit)*1.,self.A_val.ordinate-self.weight_limit)
         #const_loss = torch.exp(1+const_loss) + action_loss
         const_loss = 10*const_loss + 0.1*action_loss
-
-        loss = 0.01*(self.vel_loss/10 + self.pos_loss) + const_loss
+        torch.autograd.set_detect_anomaly(True)
+        loss = 0.01*(self.vel_loss/10 + self.pos_loss) #+ const_loss
+        #print(self.vel_loss,self.pos_loss)
         loss.backward(retain_graph=True)
 
         self.A_val.optimizer.step()
@@ -234,7 +226,9 @@ class RBF_agent_closed_simple():
         #     self.A_val.weights.clamp_(-self.weight_limit, self.weight_limit)
         #     #self.A_val.sigma.clamp_(0,1)
 
-        self.A_val.net = self.A_val.forward(x_values)
+        self.A_val.net = self.A_val.forward(self.A_val.points_for_net)
         #print(loss, pos,vel,u1,self.A_val.sigma)
         #print(loss,pos)
+        return loss
+
         return loss
