@@ -244,7 +244,7 @@ class HB_simp_delta_closed_(gym.Env):
 
     def reset(self):
         #self.states_ = [[TT(-self.L), TT(0.01), TT(0)]]
-        self.states_ = [[TT(-1.5), TT(0.1), TT(0)]]
+        self.states_ = [[TT(-1.5), TT(0.), TT(0)]]
 
         self.drags = []
         return self.states_[0]
@@ -278,7 +278,7 @@ class HB_simp_delta_closed_(gym.Env):
     def hummingbird_dynamics(self, state, action):
 
         F_g = self.m * self.g
-        F_p = self.c_A * (action) #**2
+        F_p = self.c_A * (action.item()) #**2
         F_d = self.drag(state[1].item())
 
 
@@ -300,7 +300,7 @@ class HB_simp_delta_closed_(gym.Env):
         elif torch.isinf(x):
             input('x inf')
         x_dd = (x_dot - state[1])/self.dt
-        #print('state',x_dot, x_dd)
+#        print('state (vel,x_dd,action)',x_dot, x_dd,action)
         self.drags.append((x_dot-state[1]).item()/self.dt)
 
         return x, x_dot, state[2]+self.dt 
