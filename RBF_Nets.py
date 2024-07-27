@@ -31,7 +31,7 @@ class RBFnet_openv2(nn.Module):
         self.signs[0]= 0
         
         self.loss_fn = nn.MSELoss()
-        self.loss_fn1 = nn.L1Loss()
+        self.loss_constraint_fun = nn.ReLU()
         self.final_time = final_time
 
     
@@ -131,13 +131,13 @@ class RBFnet_openv2(nn.Module):
 
 
 
-    # def get_values(self,x):  #get values for average motion 
-    #     i=-1
-    #     while ~((x>=self.maxmin[i]) and (x<=self.maxmin[i+1])):
-    #         i+=1
+    def get_values_integral(self,x):  #get values for average motion 
+        i=-1
+        while ~((x>=self.maxmin[i]) and (x<=self.maxmin[i+1])):
+            i+=1
 
-    #     action = self.actions[i] 
-    #     return action
+        action = self.actions[i] 
+        return action
 
 
         
@@ -189,19 +189,6 @@ class RBFnet_openv2(nn.Module):
         G*= self.signs
         return torch.matmul(G, self.weights) #+ self.w1
 
-
-    def first_derivative(self, x): 
-        weights = self.weights.detach().numpy()
-        centers = self.centers.detach().numpy()
-        if isinstance(self.sigma, float):
-            sigma = self.sigma
-        else:
-            sigma = self.sigma.item()
-
-        G = -((x[:, None] - centers) / sigma**2) * np.exp(-((x[:, None] - centers)**2) / (2 * sigma**2))
-        G *= self.signs.detach().numpy()
-
-        return np.dot(G, weights)
 
 
 
@@ -687,9 +674,13 @@ class RBFnet_closedv2(nn.Module):
         self.centers_x = nn.Parameter(torch.linspace(-self.final_pos, self.net_range - self.final_pos, num_centers), requires_grad=True)
         self.centers_x_dot = nn.Parameter(torch.linspace(-5, 5, num_centers), requires_grad=True)
 
-        self.weights = nn.Parameter(torch.rand(size=(num_centers,)), requires_grad=True)
+        c1 , c2 = torch.meshgrid(self.centers_x,self.centers_x_dot)
+        self.all_centers = torch.stack([c1.ravel(), c2.ravel()], axis=1)
 
-        self.signs = torch.tensor([(-1) ** (i + 1) for i in range(num_centers)], dtype=torch.float32)
+        self.weights = nn.Parameter(torch.rand(size=(self.all_centers.shape[0],)), requires_grad=True)
+
+        self.signs = torch.tensor([(-1) ** (i + 1) for i in range(self.all_centers.shape[0])], dtype=torch.float32)
+
         self.signs[0] = 0
         self.loss_fn = nn.MSELoss()
         self.final_time = final_time
@@ -704,25 +695,61 @@ class RBFnet_closedv2(nn.Module):
             {'params': self.sigma, 'lr': lr_sigma}
         ], lr=lr)
 
-        x_state = [torch.linspace(-self.final_pos, self.net_range - self.final_pos, round(1000 * self.net_range)),torch.linspace(-5, 5, round(1000 * self.net_range))]
+
+        x1 = torch.linspace(-self.final_pos, self.net_range - self.final_pos, round(1000 * self.net_range))
+        x2 = torch.linspace(-5, 5, round(1000 * self.net_range))
+        x1, x2 = torch.meshgrid(self.centers_x,self.centers_x_dot)
+        self.points_for_net = torch.stack([x1.ravel(), x2.ravel()], axis=1)
+
+
+        #self.plot()
+
+
         #self.net = self.forward(torch.linspace(-self.final_pos, self.net_range - self.final_pos, round(1000 * self.net_range)))
-        self.net = self.forward(x_state)
+        self.net = self.forward(self.points_for_net)
+
+    # def gaussian(self, x):
+
+    #     x_val = x[0].unsqueeze(1) if x[0].dim() == 1 else x[0]
+    #     x_dot_val = x[1].unsqueeze(1) if x[1].dim() == 1 else x[1]
+    #     r_2 = (x_val - self.centers_x) ** 2 + (x_dot_val - self.centers_x_dot) ** 2
+
+    #     G = torch.exp(- r_2/ (2 * self.sigma ** 2)) * self.signs
+        
+    #     return torch.matmul(G, self.weights.clone()) + self.w1.clone()
 
     def gaussian(self, x):
+        if isinstance(x,list):# and len(x)==2:
+            x = torch.stack(x)
+        if len(x.shape)< 2:
+            x = x.reshape([1,2])
+        diff = x[:, None , :] - self.all_centers[ None, :, :]
 
-        x_val = x[0].unsqueeze(1) if x[0].dim() == 1 else x[0]
-        x_dot_val = x[1].unsqueeze(1) if x[1].dim() == 1 else x[1]
-        r_2 = (x_val - self.centers_x) ** 2 + (x_dot_val - self.centers_x_dot) ** 2
+        r2 = torch.sum(diff**2, dim = 2)
+        # Broadcasting centers to match dimensions of input
+        #
+        # Compute squared distances in each dimension and sum them
+        #r_2 = (x_val - centers_x_expanded) ** 2 + (x_dot_val - centers_x_dot_expanded) ** 2
 
-        G = torch.exp(- r_2/ (2 * self.sigma ** 2)) * self.signs
-        
-        return torch.matmul(G, self.weights.clone()) + self.w1.clone()
+        G = torch.exp(-r2 / (2 * self.sigma ** 2)) * self.signs#.unsqueeze(0)
+
+        #print(sum(G - torch.exp(-r2 / (2 * self.sigma ** 2)) * self.signs.unsqueeze(0)))
+        return torch.matmul(G, self.weights) + self.w1
+
+    # def gaussian(self,x):
+    #     diff = points[:, np.newaxis, :] - centers[np.newaxis, :, :]
+
+    #     dist_sq = np.sum(diff**2, axis=2)
+    #     signs = [(-1)**i for i in range(num_centers)] #iniztializing the weight sign as opposite of the previous one
+
+    #     G = np.exp(-dist_sq / (2 * sigma**2))*signs
+    #     print(G)
+    #     Z = np.dot(G, weights)
+    #     return Z
 
     def forward(self, x):
         G = self.gaussian(x)
-        #points = torch.linspace(-self.final_pos, self.net_range - self.final_pos, self.num_centers * 6)
-        points = [torch.linspace(-self.final_pos, self.net_range - self.final_pos, round(1000 * self.net_range)),torch.linspace(-5, 5, round(1000 * self.net_range))]
-
+        
         # G_ = self.gaussian(torch.stack([points, points], dim=1)).detach().numpy()
 
         # G_smooth = G_
@@ -742,24 +769,49 @@ class RBFnet_closedv2(nn.Module):
         return G
 
     def g_(self, x):
+        if x[0]>self.net_range - self.final_pos or x[0]<-self.final_pos:
+            input('outbound pos!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1')
+        if x[1]>5 or x[1]<-5:
+            input('outbound vel!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+        if isinstance(x,list):
+            x = torch.stack(x).reshape([1,2])
+        if len(x.shape)< 2:
+            x = x.reshape([1,2])
 
-        pos = x[0].unsqueeze(1) if x[0].dim() == 1 else x[0]
-        vel = x[1].unsqueeze(1) if x[1].dim() == 1 else x[1]
-        r_x = pos - self.centers_x
-        r_xd = vel - self.centers_x_dot
-        r2 = r_x**2 + r_xd**2
-        G = torch.exp(- r2 / (2 * self.sigma ** 2)) * self.signs
-        dGdx = -(r_x / self.sigma ** 2) * G * self.signs
-        dGdx_dot = -(r_xd / self.sigma ** 2) * G * self.signs
-        #G = G_x * G_x_dot * self.signs
+
+        diff = x[:, None, :] - self.all_centers[None, :, :]
+        r2 = torch.sum(diff**2, dim=2)
+        G = torch.exp(-r2 / (2 * self.sigma ** 2)) * self.signs
+
+        # Compute gradients with respect to x and x_dot
+        dG_dx = G * (-diff[:, :, 0]) / (self.sigma ** 2)
+        dG_dx_dot = G * (-diff[:, :, 1]) / (self.sigma ** 2)
         
-        return torch.matmul(dGdx, self.weights) , torch.matmul(dGdx_dot, self.weights)
+        #print(torch.matmul(dG_dx, self.weights),torch.matmul(dG_dx_dot, self.weights))
+        return torch.matmul(dG_dx, self.weights), torch.matmul(dG_dx_dot, self.weights)
+    
+
+
+        # pos = x[0].unsqueeze(1) if x[0].dim() == 1 else x[0]
+        # vel = x[1].unsqueeze(1) if x[1].dim() == 1 else x[1]
+        # r_x = pos - self.centers_x
+        # r_xd = vel - self.centers_x_dot
+        # r2 = r_x**2 + r_xd**2
+        # G = torch.exp(- r2 / (2 * self.sigma ** 2)) * self.signs
+        # dGdx = -(r_x / self.sigma ** 2) * G * self.signs
+        # dGdx_dot = -(r_xd / self.sigma ** 2) * G * self.signs
+        # #G = G_x * G_x_dot * self.signs
+        
+        # return torch.matmul(dGdx, self.weights) , torch.matmul(dGdx_dot, self.weights)
 
     def get_values(self, x):
         x_dot, x_dd = x[1], x[2]
-        phi, phi_dot = self.g_([x[0],x[1]])
-        action = phi * x_dot + phi_dot * x_dd
-        print(x_dot,  x_dd)
+        phi_x, phi_xdot = self.g_([x[0],x[1]])
+        action = phi_x * x_dot + phi_xdot * x_dd
+        action1=phi_x * x_dot
+        action2 = phi_xdot * x_dd
+        #print(x[0], x_dot,  x_dd)
+        print('x:',x[0].item(),'x_dot',x_dot.item(),'x_dd',x_dd.item(),'phi_x',phi_x.item(),'phi_xdot',phi_xdot.item())
         return action ** 2
 
 
@@ -782,42 +834,60 @@ class RBFnet_closedv2(nn.Module):
         return output_vals
 
     def plot(self):
-        tol = 1e-3
-        t = torch.linspace(0, self.final_time, 1000)
-        A = self.gaussian(t)
-        pp = []
-        points = np.linspace(0, self.final_time, self.num_centers * 3)
-        b = optimize.fsolve(self.first_derivative, points)
+                
+        # # Assuming `self.gaussian` is a method of a class and is available here
+        # x = torch.linspace(-1, 2, 500)
+        # y = torch.linspace(-5, 5, 500)
+        # X, Y = torch.meshgrid(x, y)
 
-        b = np.insert(b, 0, 0)
-        b = np.append(b, self.final_time)
-        b = np.unique(np.unique(b.round(decimals=4)))
-        b = b[(b >= 0) & (b <= self.final_time)]
-        b = b[np.sign(self.first_derivative(b - 1e-2)) != np.sign(self.first_derivative(b + 1e-2))]
+        # # Create a grid of points (X, Y) and reshape them for the gaussian function
+        # X_flat = X.ravel()
+        # Y_flat = Y.ravel()
+        # points = (X_flat, Y_flat)
 
-        self.forward(t)
-        c = optimize.fsolve(self.second_derivative, points)
-        c = np.sort(c)
-        c = c[(c >= 0) & (c <= self.final_time)]
-        plt.plot(t.detach().numpy(), A.detach().numpy())
+        # # Evaluate the RBF at each grid point
+        # Z = self.gaussian(points)
+        # Z = Z.reshape(X.shape)  # Reshape to match the grid
+        # X = X.detach().numpy()
+        # Y = Y.detach().numpy()
+        # Z = Z.detach().numpy()
 
-        for i in range(0, len(b) - 1):
-            pp.append((b[i] + b[i + 1]) / 2)
-        pp = np.insert(pp, 0, 0)
-        pp = np.append(pp, self.final_time)
-        pp = np.unique(np.unique(pp.round(decimals=4)))
+        # # Plotting the surface
+        # fig = plt.figure(figsize=(10, 8))
+        # ax = fig.add_subplot(111, projection='3d')
+        # ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.7)
 
-        actions = []
-        for i in t:
-            actions.append(self.get_values(i).item())
-        plt.plot(t, actions)
-        for i in pp:
-            plt.plot(i, self.gaussian(i).item(), marker='^')
-            plt.axvline(i, color='r', linestyle='--')
+        # # Set labels for clarity
+        # ax.set_xlabel('x')
+        # ax.set_ylabel('y')
+        # ax.set_zlabel('Gaussian Output')
 
-        for i in b:
-            plt.plot(i, self.gaussian(i).item(), marker='o')
+        # plt.show()
+        x = torch.linspace(-2, 1, 200)
+        y = torch.linspace(-1, 3, 200)
+        X, Y = torch.meshgrid(x, y)
 
-        plt.xlabel('Time')
-        plt.ylabel('A(t)')
+        # Create a grid of points (X, Y) and reshape them for the gaussian function
+        X_flat = X.flatten()
+        Y_flat = Y.flatten()
+        points = torch.stack([X_flat,Y_flat], axis=1)
+
+        # Evaluate the RBF at each grid point
+        Z = self.gaussian(points)
+        Z = Z.reshape(X.shape)  # Reshape to match the grid
+
+        X, Y, Z = X.detach().numpy() , Y.detach().numpy() , Z.detach().numpy()
+        # Plotting the surface
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.7)
+
+        # Set labels for clarity
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.set_zlabel('Gaussian Output')
+
         plt.show()
+
+   # def plot_phi_over_t(self):
+        
