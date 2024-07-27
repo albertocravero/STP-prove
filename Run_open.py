@@ -21,27 +21,36 @@ def TT(x):
 #Parameters
 
 sigma = 0.03
-
+sigma=0.001
 lr = 0.01
 lr_sigma = 0.001
-c = [1, 1/5, 0] #
-limit = np.pi * 8 / 18
+c = [1, 1/5, 0] # useless
+#limit = np.pi * 8 / 18
 limit = np.pi *1.2/2
+num_epochs = 300
+#num_epochs = 100
+
+c_A = 1e-3/(2*np.sqrt(10))
+
 action_limit = 2*1500
-num_epochs = 500
 
 UPDATE_EVERY = num_epochs/10
 
 #c_A=9.8*0.05*4/np.pi**2
 
-c_A = 0.3 * 1e-2 / np.sqrt(50)
+#c_A = 0.3 * 1e-2 / np.sqrt(50)
 
-c_A = 1e-3/(2*np.sqrt(10))
+
+
+# Integral action:
+action_limit = action_limit*2
+c_A = c_A / 5
+
 
 env = HB_simplified_open(c_A=c_A, final_time=3)
 #num_centers = int(np.ceil(1 * env.final_time_estimate * env.mean_freq))
 num_centers = 60
-
+num_centers = 140
 state = env.reset()
 agent = RBF_agent_open(num_centers=num_centers, env=env, final_point=env.L,action_limit=action_limit, final_time=env.final_time, weight_limit=limit, sigma=sigma, lr_sigma = lr_sigma, c=c, lr=lr)
 #agent = SinusoidalAgent(num_centers=num_centers, switch=0,final_point=env.L,  final_time = env.final_time, weight_limit=limit, c1=c[0], c2 = c[1], lr=lr)
@@ -53,7 +62,7 @@ directory = agent.name + '/' + str(num_centers) + 'centers'
 
 directory = directory + ' lr: w_' + str(lr) + ' ∂_' + str(lr_sigma) +' '
 
-cartella = str(1) + 'try new formulation' 
+cartella = str(0.6) + 'integral' 
 
 cartella = cartella +'/'
 
